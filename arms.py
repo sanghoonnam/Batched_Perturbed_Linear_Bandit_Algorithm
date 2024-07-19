@@ -1,6 +1,5 @@
 import random
 
-
 class BernoulliArm():
     def __init__(self, p):
         self.p = p
@@ -8,10 +7,9 @@ class BernoulliArm():
 
     def draw(self):
         if random.random() > self.p:
-            return 0.0
+            return 0.0 # for probability 1-p
         else:
-            return 1.0
-
+            return 1.0 # for probability p
 
 class GaussianArm():
     def __init__(self, mu, sigma=1):
@@ -20,8 +18,7 @@ class GaussianArm():
         self.mean_return = self.mu
 
     def draw(self):
-        return random.gauss(self.mu, self.sigma)
-
+        return random.gauss(self.mu, self.sigma) # pick 1 number in normal distribution
 
 class AdversarialArm():
     def __init__(self, reward_sequence):
@@ -36,6 +33,4 @@ class AdversarialArm():
             self.step += 1
         else:
             tmp = random.random
-
         return tmp
-

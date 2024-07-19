@@ -3,71 +3,77 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import matplotlib
 from arms import *
-import os
+from tqdm import tqdm # progress bar
 
-from tqdm import tqdm
-
-class environment(object):#arms is a matrix
+class environment(): # arms is a matrix
     def __init__(self, bandits,arms,agents,theta,eps=0.01):
         self.bandits = bandits
-        self.theta=theta
+        self.theta = theta
         self.agents = agents
         self.results = None
         self.K = arms.shape[1]
-        self.d=arms.shape[0]
-        self.eps=eps
-        self.M = len(self.agents) #list of agents
-        self.arms=arms
+        self.d = arms.shape[0]
+        self.eps = eps
+        self.M = len(self.agents) # list of agents
+        self.arms = arms
 
     def reset(self):
         for i in range(self.M):
-            self.agents[i].clear() #initialization
+            self.agents[i].clear() # initialization
 
     def run(self, horizon, experiments=1):
-        self.horizon=horizon
-        results = np.zeros((self.M, experiments, horizon))
-        results_batch = np.zeros((self.M, experiments, horizon))
-        batch_complexity=np.zeros((self.M,experiments))
+        for i in range(self.M):
+            self.agents[i].clear()
+        self.horizon = horizon
+        results = np.zeros((self.M, experiments, horizon)) # Mx_xT
+        results_batch = np.zeros((self.M, experiments, horizon)) # Mx_xT
+        batch_complexity = np.zeros((self.M, experiments)) # Mx_
+
         for m in tqdm(range(self.M)):
             if m == 0:
                 agent = self.agents[m]
                 for i in tqdm(range(experiments)):
                     self.reset()
-                    #experiment for one agent and just one time
-                    results[m][i],batch_complexity[m][i],results_batch[m][i]=agent.run(self.arms,self.bandits,horizon)
+                    # experiment for one agent and just one time
+                    results[m][i],batch_complexity[m][i],results_batch[m][i] = agent.run(self.arms,self.bandits,horizon)
         
+        self.results = results
+        self.batch_complexity = batch_complexity
+        self.results_batch = results_batch
+        file_suffix = "npz"
 
-        self.results = results;self.batch_complexity=batch_complexity;self.results_batch=results_batch
-        file_suffix = "npz"  
-        if self.eps<0:# random
-            file_name = f"results\\random_k_{self.K}_d_{self.d}.{file_suffix}"
-        elif self.M == 3: #research on eps
-            file_name = f"results\\research_eps_{self.eps}.{file_suffix}"
+        if self.eps < 0: # random
+            file_name = f"optimal-batched-linear-bandits/results/random_k_{self.K}_d_{self.d}.{file_suffix}"
+        elif self.M == 3: # research on eps
+            file_name = f"optimal-batched-linear-bandits/results/research_eps_{self.eps}.{file_suffix}"
         else:
-            file_name = f"results\\end_k_{self.K}_d_{self.d}_eps_{self.eps}.{file_suffix}"
+            file_name = f"optimal-batched-linear-bandits/results/end_k_{self.K}_d_{self.d}_eps_{self.eps}.{file_suffix}"
 
         loaded_data = np.load(file_name)
         results = loaded_data["results"]
         batch_complexity = loaded_data["batch_complexity"]
         results_batch = loaded_data["results_batch"]
+
         results[0] = self.results[0]
         batch_complexity[0] = self.batch_complexity[0]
         results_batch[0] = self.results_batch[0]
 
-        np.savez(file_name, results=self.results,batch_complexity=self.batch_complexity,results_batch=self.results_batch,arms=self.arms,M=self.M,theta=self.theta,horizon=horizon,epsilon=self.eps)
+        np.savez(file_name, results = self.results, batch_complexity = self.batch_complexity, results_batch = self.results_batch, arms = self.arms, M = self.M, theta = self.theta, horizon = horizon, epsilon = self.eps)
 
-        #just change results in npz data for E4 algorithm
-        np.savez(file_name, results=results,batch_complexity=batch_complexity,results_batch=results_batch,arms=self.arms,M=self.M,theta=self.theta,horizon=horizon,epsilon=self.eps)
+        # just change results in npz data for E4 algorithm
+        np.savez(file_name, results = results, batch_complexity = batch_complexity, results_batch = results_batch, arms = self.arms, M = self.M, theta = self.theta, horizon = horizon, epsilon = self.eps)
 
     def compute_batch_complexity(self):
         if self.batch_complexity is None:
             print("No results of batch complexity yet.")
             return -1
-        mean=np.zeros(self.M);std=np.zeros(self.M)
+        mean = np.zeros(self.M)
+        std = np.zeros(self.M)
+
         for m in range(self.M):
-            batch_complexity_m=self.batch_complexity[m]
-            mean[m]=np.mean(batch_complexity_m)
-            std[m]=np.std(batch_complexity_m)
+            batch_complexity_m = self.batch_complexity[m]
+            mean[m] = np.mean(batch_complexity_m)
+            std[m] = np.std(batch_complexity_m)
         print("Batch complexity:")
         for m in range(self.M):
             print("%s: mean: %f, std: %f" % (self.agents[m].name, mean[m], std[m]))
@@ -144,7 +150,7 @@ class environment(object):#arms is a matrix
             # [::sample_interval, ::sample_interval]
             self.plot_result(result, ax,self.agents[m].name)
 
-        plt.ylim(-100, 1200)
+        plt.ylim(0, 500)
         plt.legend(loc='upper right')
         
         plt.xlabel("Time step",labelpad=0)
@@ -153,7 +159,7 @@ class environment(object):#arms is a matrix
         plt.subplots_adjust(left=0.095, bottom=0.08, right=1, top=1)
 
         # plt.subplots_adjust( left=0.1,bottom=0.1,right=1, top=1)
-        # plt.savefig('image\\research_eps_0.25.pdf',dpi=200, format='pdf',bbox_inches='tight')
+        plt.savefig(f'{self.agents[0].name}image\\research_eps_0.25.pdf',dpi=200, format='pdf',bbox_inches='tight')
         
         plt.show()
 

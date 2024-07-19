@@ -22,13 +22,13 @@ def parse_args():
                         help='number of total arms')
     parser.add_argument('--d', default=2, type=int,
                         help='number of context dimension')
-    parser.add_argument('--T', default=10000, type=int,
+    parser.add_argument('--T', default=50000, type=int,
                         help='time horizon')
     parser.add_argument('--num_sim', default=10, type=int,
                         help='number of total simulation')
     parser.add_argument('--verbose', action='store_true', help='end of optimism instance')
 
-    parser.add_argument('--epsilon', default=-1, type=float,
+    parser.add_argument('--epsilon', default=0.01, type=float,
                         help='end of optimism parameter')
     parser.add_argument('--research_on_epsilon', default=0, type=int,
                         help='research on epsilon')
@@ -38,11 +38,11 @@ def parse_args():
 def main():
     args = parse_args()
     np.random.seed(args.seed)
-    
     #instance
     # arms=np.array([[1,0],[0,0],[0,1]])
     # theta=np.array([1,0,0])
-
+    args.K = 5
+    args.d = 3
     if args.verbose==False:
         #True:default random instance; False: defalut end of optimism instance
 
@@ -65,22 +65,27 @@ def main():
 
     else: 
         theta = np.zeros(args.d)
-        theta[0]=1
+        theta[0] = 1
         
         arms=np.random.uniform(0, 1, (args.d, args.K))
         arms[:,0]=theta
     
     
     
-    agent=[E3TC(args.K,args.d,1)]
+    agent = [E3TC(args.K,args.d,1)]
+    agent1 = [E4PHE(args.K,args.d,1)]
 
     bandits=[GaussianArm(np.dot(theta,arms[:,i]),1) for i in range(args.K)]
 
     LinearBandit = environment(bandits,arms,agent,theta,args.epsilon)
+    LinearBandit1 = environment(bandits,arms,agent1,theta,args.epsilon)
 
     LinearBandit.run(args.T,args.num_sim)
     LinearBandit.plot_results()
     # LinearBandit.compute_batch_complexity()
+    LinearBandit1.run(args.T,args.num_sim)
+    LinearBandit1.plot_results()
+    # LinearBandit1.compute_batch_complexity()
     # LinearBandit.plot_results_batch()
 
 

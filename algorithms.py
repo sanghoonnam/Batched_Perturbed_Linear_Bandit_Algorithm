@@ -18,231 +18,513 @@ class E3TC(object):
         self.clear()
         
     def clear(self):
-        
         # DesignInv:=A^{-1}, A=\sum x_ix_i^T
-        self.DesignInv = (1 / self.reg) * np.eye(self.dim_context)  
+        self.DesignInv = (1 / self.reg) * np.eye(self.dim_context)  # 1/lambda * I_d 
         # Vector=\sum x_iy_i
         self.Vector = np.zeros(self.dim_context)
-        #estimator of theta
+        # estimator of theta
         self.theta = np.zeros(self.dim_context)
         self.last_cxt = 0
         self.last_reward = 0
+
     def initialize_distribution(self,K):
         """ Initialize a uniform distribution over K actions """
-        return np.ones(K) / K
+        return np.ones(K) / K # (1/K,1/K,...1/K)
+    
     def calculate_covariance_matrix(self,context,pi):
         '''calculate the covariance matrix'''
-        self.V=np.zeros((context.shape[0], context.shape[0]))
+        self.V=np.zeros((context.shape[0], context.shape[0])) # dxd
         for i in range(context.shape[1]):
             col = context[:, i].reshape(-1, 1)
-            self.V += pi[i] * (col @ col.T)
+            self.V += pi[i] * (col @ col.T) # V = \sum_{a} pi(a)aa^T
         tol = 1e-12
         if np.linalg.det(self.V) < tol:
-            self.V = self.V + 0.00001 * np.eye(self.dim_context)
+            self.V = self.V + 0.00001 * np.eye(self.dim_context) # += 10^-5 * I_d
         else:
             self.V = self.V
-        self.V_inv=np.linalg.inv(self.V)
+        self.V_inv=np.linalg.inv(self.V) # inverse matrix of V
     
-
-    def D_optimal_design(self,context,num_pull,max_iterations=int(1e5),threshold=1e-4):
+    def D_optimal_design(self,context,num_pull,max_iterations=int(1e5),threshold=1e-4): # Frank-Wolfe algorithm
         """ Implement the D-optimal design algorithm """
         K = context.shape[1]
-        pi = self.initialize_distribution(K)
-        objective=-1;max_norm=10
+        pi = self.initialize_distribution(K) # (1/K,1/K,...1/K)
+        objective = -1
+        max_norm = 10
 
-        for iter in range(max_iterations):
-            #update distribution
+        for _ in range(max_iterations):
+            # update distribution
             self.calculate_covariance_matrix(context,pi)
-            norms=[context[:,i].T@self.V_inv@context[:,i] for i in range(self.num_arm)]
-            arm_with_max_norm_index=np.argmax(norms)
-            max_norm=norms[arm_with_max_norm_index]
-            step_size=(max_norm/self.dim_context-1)/(max_norm-1)
-            if np.abs(objective-max_norm)<threshold:
+            norms = [context[:,i].T @ self.V_inv @ context[:,i] for i in range(self.num_arm)] # ||a||_{V^-1}^2
+            arm_with_max_norm_index = np.argmax(norms) # index of maximum norm arm
+            max_norm = norms[arm_with_max_norm_index]
+            step_size = (max_norm/self.dim_context-1)/(max_norm-1)
+
+            if np.abs(objective-max_norm) < threshold: # difference between max norm
                 break
-            #update step
-            pi=(1-step_size)*pi
-            pi[arm_with_max_norm_index]+=step_size
-            objective=max_norm
-            
-            D_optimal_design_pulling_number=np.ceil(2*pi*objective*num_pull/self.dim_context)
+
+            # update step
+            pi = (1-step_size)*pi
+            pi[arm_with_max_norm_index] += step_size
+            objective = max_norm
+            D_optimal_design_pulling_number = np.ceil(2*pi*objective*num_pull/self.dim_context) # np.ceil(1.2)==2
+
         return D_optimal_design_pulling_number
     
     def pull_arms_D_optimal_design(self,context,bandits,sum_pull,horizon):
-        num_pull=self.D_optimal_design(context,sum_pull)
+        num_pull = self.D_optimal_design(context,sum_pull)
         
         for k in range(self.num_arm):
-            self.break_out=False
-            num=0
-            while num<num_pull[k]:
-                if self.t==horizon:
-                    self.break_out=True
+            self.break_out = False
+            num = 0
+            while num < num_pull[k]:
+                if self.t == horizon:
+                    self.break_out = True
                     break
-                action=k
+                action = k
                 reward = bandits[action].draw()
                 self.results_for_this_agent[self.t] = bandits[action].mean_return
-                self.results_batch[self.t] = self.batch_complexity + 1
+                self.results_batch[self.t] = self.batch_complexity + 1 # indicating current batch number
                 self.receive_reward(action,context[:,action],reward)
                 self.update_model()
                 num+=1
             if self.break_out:
                 break
         return num_pull
+    
     def receive_reward(self, arm, context, reward):
         self.last_cxt = context
         self.last_reward = reward
         # self.results_batch[self.t]=self.batch_complexity+1
-
+    
+    # we should add LinPHE algorithm in RLS estimators
     def update_model(self, num_iter=None):
-        self.Vector = self.Vector + self.last_reward * self.last_cxt
-        omega = np.dot(self.DesignInv, self.last_cxt)
-        self.DesignInv = self.DesignInv - np.outer(omega, omega) / (1 + np.dot(omega, self.last_cxt))
+        self.Vector = self.Vector + (self.last_reward) * self.last_cxt
+        omega = np.dot(self.DesignInv, self.last_cxt) # H^-1 @ x
+        self.DesignInv = self.DesignInv - np.outer(omega, omega) / (1 + np.dot(omega, self.last_cxt)) # update H^-1
         self.theta = np.dot(self.DesignInv, self.Vector)
         self.t += 1
 
     def track_and_stop_proportion(self,context,horizon):
-        self.estimate_mean=context.T@self.theta
-        self.best_arm=np.argmax(self.estimate_mean)
-        best_mean=self.estimate_mean[self.best_arm]
+        self.estimate_mean = context.T @ self.theta # mean reward vector
+        self.best_arm = np.argmax(self.estimate_mean)
+        best_mean = self.estimate_mean[self.best_arm]
 
-        Delta=best_mean-self.estimate_mean
+        # definition 4.3 code
+        Delta = best_mean - self.estimate_mean
         # Delta = Delta - 4/(np.log(np.log(horizon)))
         Delta[self.best_arm] = 0
 
-        K=context.shape[1]
+        K = context.shape[1] # number of arms
 
-        w = cp.Variable(K)  
-        objective = cp.Minimize(w@ Delta)  
-
-        constraints = [w >= 0]  
-        
-        
-
-        H_w = sum([w[j] * np.outer(context[:,j], context[:,j]) for j in range(K)])+np.eye(self.dim_context)*1e-10
+        # using cvxpy to solve convex optimization problems
+        w = cp.Variable(K) # length K vector
+        objective = cp.Minimize(w @ Delta)
+        constraints = [w >= 0]
+        H_w = sum([w[j] * np.outer(context[:,j], context[:,j]) for j in range(K)]) + np.eye(self.dim_context)*1e-10
         # print(H_w.shape)
+
         for i in range(K):
-            if i !=self.best_arm: #consider sub_optimal_arms
-                x = context[:,i:i+1]
-                c=cp.reshape(Delta[i]**2/2,(1, 1))
-                constraint=cp.bmat([[H_w, x], [x.T, c ]]) >> 0
+            if i != self.best_arm: # consider sub_optimal_arms
+                x = context[:,i:i+1] # dx1
+                # x_star = context[:,self.best_arm:self.best_arm+1] "I add it"
+                # x = x - x_star
+                c = cp.reshape(Delta[i]**2 / 2, (1, 1))
+                constraint = cp.bmat([[H_w, x], [x.T, c]]) >> 0 # (d+1)x(d+1) block matrix / positive semidefinite matrix Schur complement
                 constraints.append(constraint)
 
         prob = cp.Problem(objective, constraints)
-        prob.solve(solver=cp.SCS,max_iters=100000,eps=1e-2)
+        prob.solve(solver = cp.SCS,max_iters = 100000,eps = 1e-2)
         #,verbose=True
         return w.value
 
     def pull_arms_track_and_stop(self,context,bandits,w,horizon):
-        T=horizon
+        T = horizon
         # alpha = 1+self.dim_context*np.log(np.log(T))**4/np.log(T)
         # alpha = (1+1/np.log(np.log(T)))*(1+self.dim_context*np.log(np.log(T))**4/np.log(T))
-        alpha = (1+1/np.log(np.log(T)))*(1+self.dim_context*np.log(np.log(T))/np.log(T))
-        threshold=min((np.log(T))**(1+self.gamma),T/(2*context.shape[1]))
+        alpha = (1 + 1/np.log(np.log(T))) * (1 + self.dim_context*np.log(np.log(T))/np.log(T))
+        threshold = min((np.log(T))**(1+self.gamma), T/(2*context.shape[1])) # min(logT^(1+r), T/2K) to prevent a large exploration
         
-        num_pull=np.minimum(w*alpha*np.log(T),threshold)
+        num_pull = np.minimum(w * alpha * np.log(T),threshold) # length K vector
         # num_pull=w*alpha*np.log(T)
-        num_pull=np.ceil(num_pull).astype(int)
+        num_pull = np.ceil(num_pull).astype(int)
         
         for k in range(self.num_arm):
-            break_out=False
+            break_out = False
             for _ in range(num_pull[k]):
-                if self.t>=horizon:
-                    break_out=True
+                if self.t >= horizon:
+                    break_out = True
                     break
-                action=k
+                action = k
                 reward = bandits[action].draw()
                 self.results_for_this_agent[self.t] = bandits[action].mean_return
-                self.results_batch[self.t] = self.batch_complexity+1
+                self.results_batch[self.t] = self.batch_complexity + 1
                 self.receive_reward(action,context[:,action],reward)
                 self.update_model()
             if break_out:
                 break
 
         return num_pull
-        
+    
+    # elimination rule for batch more than 3
     def successive_elimination(self,varepsilon,context):
-        self.estimate_mean=context.T@self.theta
-        best_mean=np.max(self.estimate_mean)
-        threshold=best_mean-2*varepsilon
-        cols_to_select=np.where(self.estimate_mean>threshold)[0]
-        context=context[:,cols_to_select]
-        self.num_arm=context.shape[1]
+        self.estimate_mean = context.T @ self.theta # Kx1
+        best_mean = np.max(self.estimate_mean)
+        threshold = best_mean - 2*varepsilon
+        cols_to_select = np.where(self.estimate_mean>threshold)[0] # return array of indicies
+        context = context[:,cols_to_select] # eliminate arm's context
+        self.num_arm = context.shape[1]
         return context,cols_to_select
         
     def run(self,context,bandits,horizon):
         self.clear()
+
         '''batch 1 '''
-        self.batch_complexity=0
-        self.t=0;self.horizon=horizon
-        K=context.shape[1]#num of all arms
-        self.num_arm=K
+        self.batch_complexity = 0
+        self.t = 0
+        self.horizon = horizon
+        K = context.shape[1] # num of all arms
+        self.num_arm = K
         self.results_for_this_agent = np.zeros(horizon)
         self.results_batch = np.zeros(horizon)
 
-        #Exploration
+        # Exploration "I think np.sqrt(horizon) -> np.sqrt(np.log(horizon))"
         self.pull_arms_D_optimal_design(context,bandits,np.sqrt(horizon),horizon)
-        #Calculate
-        w=self.track_and_stop_proportion(context,horizon)
-        self.batch_complexity+=1
+
+        # Calculate
+        w = self.track_and_stop_proportion(context,horizon)
+        self.batch_complexity += 1
+
         '''batch 2'''
         # self.clear()
-        # num_pull_D=self.pull_arms_D_optimal_design(context,bandits,np.sqrt(horizon),horizon)
-        num_pull_T=self.pull_arms_track_and_stop(context,bandits,w,horizon)
-        # sum_pull_second_batch=num_pull_D+num_pull_T
-        #Calculate stopping statistic Z
-        values=[]
-        self.estimate_mean=context.T@self.theta
-        self.best_arm=np.argmax(self.estimate_mean)
-        best_mean=self.estimate_mean[self.best_arm]
-        Delta=best_mean-self.estimate_mean
-        H = self.DesignInv+np.eye(self.dim_context)*1e-10
+
+        # Exploration
+        # num_pull_D = self.pull_arms_D_optimal_design(context,bandits,np.sqrt(np.log(horizon)),horizon)
+        num_pull_T = self.pull_arms_track_and_stop(context,bandits,w,horizon)
+        # sum_pull_second_batch = num_pull_D + num_pull_T
+
+        # Calculate stopping statistic Z
+        values = []
+        self.estimate_mean = context.T @ self.theta
+        self.best_arm = np.argmax(self.estimate_mean)
+        best_mean = self.estimate_mean[self.best_arm]
+        Delta = best_mean - self.estimate_mean
+        H = self.DesignInv + np.eye(self.dim_context) * 1e-10
         # for k in range(K):
         #     H+=sum_pull_second_batch[k]*np.outer(context[:,k],context[:,k])
+
+        # Calculating for Chernoff's stopping rule
         for k in range(K):
-            arm=context[:,k]
-            
-            if k!=self.best_arm:
-                value_Z_k=(Delta[k])**2/(2*(arm-context[:,self.best_arm]).T@H@(arm-context[:,self.best_arm]))
+            arm = context[:,k]
+            if k != self.best_arm:
+                value_Z_k = (Delta[k])**2 / (2*(arm - context[:,self.best_arm]).T @ H @ (arm-context[:,self.best_arm]))
                 values.append(value_Z_k)
-        stopping_Z=np.min(values)
-        #Chernoff's stopping rule
-        beta=1/2*np.log(self.t**(self.dim_context/2)*horizon)
-        if stopping_Z>beta:
-            context=context[:,self.best_arm:self.best_arm+1]
-            bandits=[bandits[self.best_arm]]
+        stopping_Z = np.min(values)
+
+        # Chernoff's stopping rule "I think beta has no term log(logT)"
+        beta = 1/2 * np.log(self.t ** (self.dim_context/2) * horizon)
+        if stopping_Z > beta:
+            context = context[:,self.best_arm:self.best_arm + 1] # eliminate all suboptimal arm
+            bandits = [bandits[self.best_arm]]
             # print("Batch complexity:3.")
-        self.batch_complexity+=1
+        self.batch_complexity += 1
+
         '''batch 3'''
-        if context.shape[1]>1 and self.t<horizon:
+        if context.shape[1] > 1 and self.t < horizon:
             # self.clear()
-            num_pull=(np.log(horizon))**(1+self.gamma)
+            num_pull = (np.log(horizon))**(1+self.gamma)
             self.pull_arms_D_optimal_design(context,bandits,num_pull,horizon)
-            varepsilon=np.sqrt(self.dim_context*np.log(K*horizon**2)/num_pull)
-            context,cols_to_select=self.successive_elimination(varepsilon,context)
-            bandits=[bandits[i] for i in cols_to_select]
-            self.batch_complexity+=1
+            varepsilon = np.sqrt(self.dim_context * np.log(K * horizon**2)/num_pull) # np.sqrt(dlog(KT^2)/T_{3})
+            context,cols_to_select = self.successive_elimination(varepsilon,context)
+            bandits = [bandits[i] for i in cols_to_select]
+            self.batch_complexity += 1
+        
         '''batch 4...'''
         l=1
-        while context.shape[1]>1 and self.t<horizon:
+        while context.shape[1] > 1 and self.t < horizon:
             # self.clear()
-            num_pull=horizon**(1-1/(2**l))
+            num_pull = horizon**(1-1/(2**l))
             self.pull_arms_D_optimal_design(context,bandits,num_pull,horizon)
-            varepsilon=np.sqrt(self.dim_context*np.log(K*horizon**2)/num_pull)
-            context,cols_to_select=self.successive_elimination(varepsilon,context)
-            bandits=[bandits[i] for i in cols_to_select]
-            l+=1;self.batch_complexity+=1
+            varepsilon = np.sqrt(self.dim_context*np.log(K * horizon**2)/num_pull) # np.sqrt(dlog(KT^2)/T_{l+3})
+            context,cols_to_select = self.successive_elimination(varepsilon,context)
+            bandits = [bandits[i] for i in cols_to_select]
+            l+=1
+            self.batch_complexity+=1
 
-        '''Commit'''
-        action=0
-        while self.t<horizon:
+        '''Commit(Exploitation)'''
+        action = 0
+        while self.t < horizon:
             reward = bandits[action].draw()
             self.results_for_this_agent[self.t] = bandits[action].mean_return
             self.results_batch[self.t] = self.batch_complexity+1
             self.receive_reward(action,context[:,action],reward)
             # self.update_model()
-            if self.t == horizon-1:
-                self.batch_complexity+=1
-            self.t+=1
+            if self.t == horizon - 1:
+                self.batch_complexity += 1
+            self.t += 1
         return self.results_for_this_agent,self.batch_complexity,self.results_batch
+
+class E4PHE(object):
+    """
+    Explore, Estimate, Eliminate Then Commit Algorithm in our paper
+    """
+    def __init__(self, num_arm, dim_context,reg=1.0, gamma=10,  name='E4PHE'):
+        self.reg=reg
+        self.num_arm = num_arm
+        self.dim_context = dim_context
+        self.name = name
+        self.gamma=gamma
+        
+        self.clear()
+        
+    def clear(self):
+        # DesignInv:=A^{-1}, A=\sum x_ix_i^T
+        self.DesignInv = (1 / self.reg) * np.eye(self.dim_context)  # 1/lambda * I_d 
+        # Vector=\sum x_iy_i
+        self.Vector = np.zeros(self.dim_context)
+        # estimator of theta
+        self.theta = np.zeros(self.dim_context)
+        self.last_cxt = 0
+        self.last_reward = 0
+
+    def initialize_distribution(self,K):
+        """ Initialize a uniform distribution over K actions """
+        return np.ones(K) / K # (1/K,1/K,...1/K)
+    
+    def calculate_covariance_matrix(self,context,pi):
+        '''calculate the covariance matrix'''
+        self.V=np.zeros((context.shape[0], context.shape[0])) # dxd
+        for i in range(context.shape[1]):
+            col = context[:, i].reshape(-1, 1)
+            self.V += pi[i] * (col @ col.T) # V = \sum_{a} pi(a)aa^T
+        tol = 1e-12
+        if np.linalg.det(self.V) < tol:
+            self.V = self.V + 0.00001 * np.eye(self.dim_context) # += 10^-5 * I_d
+        else:
+            self.V = self.V
+        self.V_inv=np.linalg.inv(self.V) # inverse matrix of V
+    
+    def D_optimal_design(self,context,num_pull,max_iterations=int(1e5),threshold=1e-4): # Frank-Wolfe algorithm
+        """ Implement the D-optimal design algorithm """
+        K = context.shape[1]
+        pi = self.initialize_distribution(K) # (1/K,1/K,...1/K)
+        objective = -1
+        max_norm = 10
+
+        for _ in range(max_iterations):
+            # update distribution
+            self.calculate_covariance_matrix(context,pi)
+            norms = [context[:,i].T @ self.V_inv @ context[:,i] for i in range(self.num_arm)] # ||a||_{V^-1}^2
+            arm_with_max_norm_index = np.argmax(norms) # index of maximum norm arm
+            max_norm = norms[arm_with_max_norm_index]
+            step_size = (max_norm/self.dim_context-1)/(max_norm-1)
+
+            if np.abs(objective-max_norm) < threshold: # difference between max norm
+                break
+
+            # update step
+            pi = (1-step_size)*pi
+            pi[arm_with_max_norm_index] += step_size
+            objective = max_norm
+            D_optimal_design_pulling_number = np.ceil(2*pi*objective*num_pull/self.dim_context) # np.ceil(1.2)==2
+
+        return D_optimal_design_pulling_number
+    
+    def pull_arms_D_optimal_design(self,context,bandits,sum_pull,horizon):
+        num_pull = self.D_optimal_design(context,sum_pull)
+        
+        for k in range(self.num_arm):
+            self.break_out = False
+            num = 0
+            while num < num_pull[k]:
+                if self.t == horizon:
+                    self.break_out = True
+                    break
+                action = k
+                reward = bandits[action].draw()
+                self.results_for_this_agent[self.t] = bandits[action].mean_return
+                self.results_batch[self.t] = self.batch_complexity + 1 # indicating current batch number
+                self.receive_reward(action,context[:,action],reward)
+                self.update_model()
+                num+=1
+            if self.break_out:
+                break
+        return num_pull
+    
+    def receive_reward(self, arm, context, reward):
+        self.last_cxt = context
+        self.last_reward = reward
+        # self.results_batch[self.t]=self.batch_complexity+1
+    
+    # we should add LinPHE algorithm in RLS estimators
+    def update_model(self, num_iter=None):
+        # z = np.random.binomial(2,0.5)
+        z = np.random.normal(0,1)
+        # z = 0
+        self.Vector = self.Vector + (self.last_reward + z) * self.last_cxt
+        omega = np.dot(self.DesignInv, self.last_cxt) # H^-1 @ x
+        self.DesignInv = self.DesignInv - np.outer(omega, omega) / (1 + np.dot(omega, self.last_cxt)) # update H^-1
+        self.theta = np.dot(self.DesignInv, self.Vector)
+        self.t += 1
+
+    def track_and_stop_proportion(self,context,horizon):
+        self.estimate_mean = context.T @ self.theta # mean reward vector
+        self.best_arm = np.argmax(self.estimate_mean)
+        best_mean = self.estimate_mean[self.best_arm]
+
+        # definition 4.3 code
+        Delta = best_mean - self.estimate_mean
+        # Delta = Delta - 4/(np.log(np.log(horizon)))
+        Delta[self.best_arm] = 0
+
+        K = context.shape[1] # number of arms
+
+        # using cvxpy to solve convex optimization problems
+        w = cp.Variable(K) # length K vector
+        objective = cp.Minimize(w @ Delta)
+        constraints = [w >= 0]
+        H_w = sum([w[j] * np.outer(context[:,j], context[:,j]) for j in range(K)]) + np.eye(self.dim_context)*1e-10
+        # print(H_w.shape)
+
+        for i in range(K):
+            if i != self.best_arm: # consider sub_optimal_arms
+                x = context[:,i:i+1] # dx1
+                # x_star = context[:,self.best_arm:self.best_arm+1] "I add it"
+                # x = x - x_star
+                c = cp.reshape(Delta[i]**2 / 2, (1, 1))
+                constraint = cp.bmat([[H_w, x], [x.T, c]]) >> 0 # (d+1)x(d+1) block matrix / positive semidefinite matrix Schur complement
+                constraints.append(constraint)
+
+        prob = cp.Problem(objective, constraints)
+        prob.solve(solver = cp.SCS,max_iters = 100000,eps = 1e-2)
+        #,verbose=True
+        return w.value
+
+    def pull_arms_track_and_stop(self,context,bandits,w,horizon):
+        T = horizon
+        # alpha = 1+self.dim_context*np.log(np.log(T))**4/np.log(T)
+        # alpha = (1+1/np.log(np.log(T)))*(1+self.dim_context*np.log(np.log(T))**4/np.log(T))
+        alpha = (1 + 1/np.log(np.log(T))) * (1 + self.dim_context*np.log(np.log(T))/np.log(T))
+        threshold = min((np.log(T))**(1+self.gamma), T/(2*context.shape[1])) # min(logT^(1+r), T/2K) to prevent a large exploration
+        
+        num_pull = np.minimum(w * alpha * np.log(T),threshold) # length K vector
+        # num_pull=w*alpha*np.log(T)
+        num_pull = np.ceil(num_pull).astype(int)
+        
+        for k in range(self.num_arm):
+            break_out = False
+            for _ in range(num_pull[k]):
+                if self.t >= horizon:
+                    break_out = True
+                    break
+                action = k
+                reward = bandits[action].draw()
+                self.results_for_this_agent[self.t] = bandits[action].mean_return
+                self.results_batch[self.t] = self.batch_complexity + 1
+                self.receive_reward(action,context[:,action],reward)
+                self.update_model()
+            if break_out:
+                break
+
+        return num_pull
+    
+    # elimination rule for batch more than 3
+    def successive_elimination(self,varepsilon,context):
+        self.estimate_mean = context.T @ self.theta # Kx1
+        best_mean = np.max(self.estimate_mean)
+        threshold = best_mean - 2*varepsilon
+        cols_to_select = np.where(self.estimate_mean>threshold)[0] # return array of indicies
+        context = context[:,cols_to_select] # eliminate arm's context
+        self.num_arm = context.shape[1]
+        return context,cols_to_select
+        
+    def run(self,context,bandits,horizon):
+        self.clear()
+        '''batch 1 '''
+        self.batch_complexity = 0
+        self.t = 0
+        self.horizon = horizon
+        K = context.shape[1] # num of all arms
+        self.num_arm = K
+        self.results_for_this_agent = np.zeros(horizon)
+        self.results_batch = np.zeros(horizon)
+
+        # Exploration "I think np.sqrt(horizon) -> np.sqrt(np.log(horizon))"
+        self.pull_arms_D_optimal_design(context,bandits,np.sqrt(horizon)/np.sqrt(np.log(horizon)),horizon)
+        # self.pull_arms_D_optimal_design(context,bandits,np.sqrt(horizon),horizon)
+
+        # Calculate
+        w = self.track_and_stop_proportion(context,horizon)
+        self.batch_complexity += 1
+
+        '''batch 2'''
+        # self.clear()
+
+        # Exploration
+        # num_pull_D = self.pull_arms_D_optimal_design(context,bandits,np.sqrt(horizon)/np.log(horizon),horizon)
+        num_pull_T = self.pull_arms_track_and_stop(context,bandits,w,horizon)
+        # sum_pull_second_batch = num_pull_D + num_pull_T
+
+        # Calculate stopping statistic Z
+        values = []
+        self.estimate_mean = context.T @ self.theta
+        self.best_arm = np.argmax(self.estimate_mean)
+        best_mean = self.estimate_mean[self.best_arm]
+        Delta = best_mean - self.estimate_mean
+        H = self.DesignInv + np.eye(self.dim_context) * 1e-10
+        # for k in range(K):
+        #     H+=sum_pull_second_batch[k]*np.outer(context[:,k],context[:,k])
+
+        # Calculating for Chernoff's stopping rule
+        for k in range(K):
+            arm = context[:,k]
+            if k != self.best_arm:
+                value_Z_k = (Delta[k])**2 / (2*(arm - context[:,self.best_arm]).T @ H @ (arm-context[:,self.best_arm]))
+                values.append(value_Z_k)
+        stopping_Z = np.min(values)
+
+        # Chernoff's stopping rule "I think beta has no term log(logT)"
+        beta = 1/2 * np.log(self.t ** (self.dim_context/2) * horizon)
+        if stopping_Z > beta:
+            context = context[:,self.best_arm:self.best_arm + 1] # eliminate all suboptimal arm
+            bandits = [bandits[self.best_arm]]
+            # print("Batch complexity:3.")
+        self.batch_complexity += 1
+
+        '''batch 3'''
+        if context.shape[1] > 1 and self.t < horizon:
+            # self.clear()
+            num_pull = (np.log(horizon))**(1+self.gamma)
+            self.pull_arms_D_optimal_design(context,bandits,num_pull,horizon)
+            varepsilon = np.sqrt(self.dim_context * np.log(K * horizon**2)/num_pull) # np.sqrt(dlog(KT^2)/T_{3})
+            context,cols_to_select = self.successive_elimination(varepsilon,context)
+            bandits = [bandits[i] for i in cols_to_select]
+            self.batch_complexity += 1
+        
+        '''batch 4...'''
+        l=1
+        while context.shape[1] > 1 and self.t < horizon:
+            # self.clear()
+            num_pull = horizon**(1-1/(2**l))
+            self.pull_arms_D_optimal_design(context,bandits,num_pull,horizon)
+            varepsilon = np.sqrt(self.dim_context*np.log(K * horizon**2)/num_pull) # np.sqrt(dlog(KT^2)/T_{l+3})
+            context,cols_to_select = self.successive_elimination(varepsilon,context)
+            bandits = [bandits[i] for i in cols_to_select]
+            l+=1
+            self.batch_complexity+=1
+
+        '''Commit(Exploitation)'''
+        action = 0
+        while self.t < horizon:
+            reward = bandits[action].draw()
+            self.results_for_this_agent[self.t] = bandits[action].mean_return
+            self.results_batch[self.t] = self.batch_complexity+1
+            self.receive_reward(action,context[:,action],reward)
+            # self.update_model()
+            if self.t == horizon - 1:
+                self.batch_complexity += 1
+            self.t += 1
+        return self.results_for_this_agent,self.batch_complexity,self.results_batch
+
 
 class LinUCB(object):
     def __init__(self, num_arm, dim_context, nu, reg=1.0, C=0.5,name='rs-OFUL'):
